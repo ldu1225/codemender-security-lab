@@ -1,58 +1,162 @@
-# 🧪 CodeMender CI/CD DevSecOps Hands-on Lab (GitHub & Google Cloud WIF)
-
-이 실습 저장소는 **Google Cloud WIF (Workload Identity Federation)** 와 **CodeMender (Gemini 기반 자율 보안 에이전트)** 를 활용하여, 비밀 키(Service Account Key) 없이 GitHub Actions CI/CD 파이프라인에서 보안 취약점을 자동으로 탐지, 검증, 패치 및 Pull Request까지 생성하는 전체 DevSecOps 워크플로우를 직접 구축하고 실습할 수 있도록 설계된 핸즈온 랩입니다.
-
----
-
-## 🎯 학습 목표
-1. **Keyless Cloud 인증 (WIF)**: 영구적인 JSON 서비스 계정 키 없이 OIDC 토큰 교환을 통해 안전하게 GCP에 인증하는 메커니즘을 이해하고 구성합니다.
-2. **Shift-Left Local Security**: 개발자 로컬 환경에서 Git Pre-commit Hook과 Semgrep을 통해 취약점을 조기에 차단하는 Inner Loop를 체험합니다.
-3. **CI/CD Security Pipeline (GitHub Actions)**: 코드가 Push될 때마다 자동으로 실행되는 파이프라인 지시서(`.github/workflows/*.yml`)를 작성합니다.
-4. **CodeMender (`cm`) 자율 보안 에이전트**:
-   - `cm find`: 정적 분석을 통해 취약점 탐지
-   - `cm verify`: 모의 공격 페이로드 실행을 통한 Exploit 검증 (오탐 제거)
-   - `cm fix`: Gemini LLM 기반 자동 보안 패치 생성 및 테스트 통과 확인
-   - `Autonomous PR`: 수정된 코드를 브랜치로 푸시하고 자동으로 PR 제출
-5. **Security Gate**: 취약점이 발견되면 사람이 승인하기 전까지 프로덕션 배포를 차단(Block)하는 엔터프라이즈 게이트를 검증합니다.
+# 🛡️ Enterprise Autonomous DevSecOps Hands-on Lab
+### Google Cloud Workload Identity Federation (WIF) & CodeMender AI Agent
 
 ---
 
-## 📂 프로젝트 폴더 구조 및 가이드
+## 📖 1. 랩 개요 및 배경 (Background & Objective)
 
-각 폴더마다 상세한 설명과 가이드가 담긴 `README.md`가 포함되어 있습니다:
+### 💡 왜 이 실습이 필요한가요? (배경)
+전통적인 개발 및 배포 환경에서는 보안 검사가 릴리즈 직전에 수동으로 이루어지거나, CI/CD 파이프라인에서 취약점 스캐너(SAST)가 수백 개의 경고를 쏟아내며 개발자에게 일일이 고치라고 떠넘기는 방식이었습니다. 이로 인해:
+1. **오탐(False Positive) 피로도**: 실제로 악용 불가능한 취약점까지 경고되어 개발자가 무시함.
+2. **배포 지연 및 병목**: 취약점을 사람이 분석하고 패치 코드를 작성하느라 며칠씩 지연됨.
+3. **보안 키 유출 위험**: CI/CD 파이프라인(GitHub Actions)에 Google Cloud의 영구 서비스 계정 키(`JSON Key`)를 등록해 두었다가 GitHub이 털리거나 실수로 커밋되어 클라우드 계정이 탈취되는 사고 빈번.
 
-```text
-├── README.md                      # [현재 파일] 전체 실습 가이드 및 아키텍처
-├── package.json                   # 취약점이 포함된 Node.js 샘플 애플리케이션
-├── src/                           # 🚨 보안 취약점 대상 애플리케이션 소스코드
-│   └── README.md                  # 발견 대상 취약점(RCE, SSRF 등) 설명서
-├── lab/                           # 🛠️ 실습 도구 및 템플릿
-│   ├── README.md                  # lab 디렉토리 역할 안내
-│   ├── bin/                       # CodeMender CLI 바이너리 (cm-linux)
-│   ├── hooks/                     # 로컬 Git pre-commit 훅 스크립트
-│   ├── scripts/                   # Semgrep -> CodeMender 변환기 등
-│   ├── templates/                 # 9단계에서 완성할 파이프라인 템플릿
-│   └── solutions/                 # 완성본 정답 파이프라인 파일
-└── .github/                       # 🤖 GitHub Actions 설정
-    ├── README.md                  # Actions 워크플로우 구조 및 동작 원리
-    ├── scripts/                   # PR 생성, 패치 추출 등 파이프라인 보조 스크립트
-    └── workflows/                 # 실습자가 최종 배치할 CI/CD 워크플로우 폴더
+### 🎯 이 랩의 목표 (What You Will Build)
+본 랩에서는 Google Cloud의 최신 보안 및 AI 기술을 결합하여 **현대적인 자율 보안(Autonomous DevSecOps) 파이프라인**을 구축합니다:
+- **Keyless Architecture (WIF)**: 영구적인 JSON 비밀 키를 100% 제거하고, GitHub이 발행한 OIDC 토큰과 Google Cloud STS를 통한 단기(Short-lived) 토큰 교환으로 클라우드에 안전하게 접근합니다.
+- **Shift-Left Local Security (Inner Loop)**: 코드를 커밋하기 전 로컬 환경에서 Git Pre-commit Hook과 Semgrep으로 위험한 코드를 사전에 차단합니다.
+- **Autonomous Remediation (CodeMender + Gemini 3.7 Flash)**:
+  - 취약점 단순 탐지(`cm find`)에 그치지 않고,
+  - 가상 샌드박스에서 모의 해킹 페이로드를 실행해 실제 뚫리는지 공격 검증(`cm verify`)을 거쳐 오탐을 0%로 만들고,
+  - Gemini LLM 에이전트가 완벽한 방어 패치 코드를 스스로 작성(`cm fix`)하여,
+  - 개발자가 검토만 하면 되도록 **GitHub Pull Request(PR)**를 자동으로 발행합니다.
+- **Strict Security Gate**: 패치되지 않은 취약점이 남아있는 한 메인 브랜치의 배포를 원천 차단하는 엔터프라이즈 거버넌스를 구현합니다.
+
+---
+
+## 🏗️ 2. 아키텍처 및 엔드투엔드 워크플로우 (Architecture & Flow)
+
+### 📊 전체 시스템 아키텍처 다이어그램
+
+```mermaid
+flowchart TB
+    subgraph Local["👨‍💻 개발자 로컬 환경 (Inner Loop)"]
+        Dev["개발자"] -->|1. 코드 수정| LocalCode["src/ (취약점 포함)"]
+        LocalCode -->|2. git commit| PreCommit["Git Pre-commit Hook\n(Semgrep SAST)"]
+        PreCommit -->|위험 감지 시 커밋 중단| Block["❌ Commit Blocked"]
+        PreCommit -->|안전한 수식 치환 후| CommitPass["✅ Commit & Push"]
+    end
+
+    subgraph GitHub["🐙 GitHub Cloud Platform"]
+        CommitPass -->|3. Push to main| Repo["GitHub Repo\n(codemender-security-lab)"]
+        Repo -->|4. Trigger| Actions["GitHub Actions Runner\n(Ubuntu VM)"]
+        
+        subgraph GHA["CI/CD Pipeline Jobs"]
+            OIDC["GitHub OIDC Token\n발행"]
+            CM_Scan["cm find\n(취약점 탐지)"]
+            CM_Verify["cm verify\n(Exploit 모의 공격 검증)"]
+            CM_Fix["cm fix\n(Gemini 패치 합성)"]
+            Gate["Security Gate\n(취약점 잔존 시 배포 차단)"]
+            AutoPR["Autonomous PR 발행\n(Pull Request #1)"]
+        end
+    end
+
+    subgraph GCP["☁️ Google Cloud Platform"]
+        WIF["Workload Identity Pool\n& Provider (OIDC)"]
+        STS["Security Token Service\n(단기 토큰 교환)"]
+        SA["Service Account\n(codemender-ci)"]
+        Vertex["Vertex AI\n(Gemini 3.7 Flash)"]
+    end
+
+    Actions --> OIDC
+    OIDC -->|5. OIDC Token 전송| WIF
+    WIF -->|검증 성공 시| STS
+    STS -->|단기 Access Token 발급| SA
+    SA -->|6. 클라우드 인증 완료| Actions
+
+    Actions --> CM_Scan
+    CM_Scan --> CM_Verify
+    CM_Verify -->|7. AI 추론 및 패치 요청| Vertex
+    Vertex -->|8. 최적 보안 패치 반환| CM_Fix
+    CM_Fix --> AutoPR
+    CM_Fix --> Gate
+    Gate -->|9. 미해결 취약점 존재 시| PipelineFail["🛑 Exit 1 (배포 차단)"]
+    AutoPR -->|10. 개발자 리뷰 및 Merge| Repo
 ```
 
 ---
 
-## 🚀 전체 단계별 실습 순서 (Step-by-Step)
+## 🔄 3. 단계별 핵심 메커니즘 상세 설명
 
-### [1단계] Google Cloud 사전 준비 (GCP Console 또는 Cloud Shell)
-실습에 사용할 GCP 프로젝트 ID를 환경변수로 지정하고 필요한 API를 활성화합니다.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as 개발자 (User)
+    participant GHA as GitHub Actions 러너
+    participant GH_OIDC as GitHub OIDC IdP
+    participant GCP_WIF as GCP WIF (Pool/Provider)
+    participant GCP_SA as GCP 서비스 계정 (IAM)
+    participant CM as CodeMender CLI (cm)
+    participant Gemini as Vertex AI (Gemini 3.7)
+
+    Note over Dev,GHA: [인증 단계: Keyless WIF]
+    GHA->>GH_OIDC: OIDC JWT 토큰 요청 (저장소/브랜치 정보 포함)
+    GH_OIDC-->>GHA: OIDC ID Token 발급
+    GHA->>GCP_WIF: OIDC 토큰 전달 및 인증 요청
+    GCP_WIF->>GCP_WIF: 서명 검증 및 저장소 소유자 일치 확인
+    GCP_WIF->>GCP_SA: WIF Principal 권한으로 서비스 계정 단기 토큰 발급
+    GCP_SA-->>GHA: 단기 GCP Access Token 반환 (Key 유출 위험 제로)
+
+    Note over GHA,Gemini: [보안 검사 및 AI 자동 조치]
+    GHA->>CM: cm find (프로젝트 전체 정적 스캔)
+    CM-->>GHA: 취약점 발견 (SSRF, Buffer Leak 등)
+    GHA->>CM: cm verify (모의 공격 실행)
+    CM->>Gemini: 공격 벡터 분석 질의
+    Gemini-->>CM: Exploit 페이로드 및 공격 시나리오
+    CM-->>GHA: 실제 공격 성공 입증 (True Positive 판정)
+    
+    GHA->>CM: cm fix (보안 패치 생성)
+    CM->>Gemini: AST 기반 방어 코드 합성 요청
+    Gemini-->>CM: IPv4/IPv6 사설망 차단 필터 코드 생성
+    CM->>CM: 단위 테스트 실행 및 패치 검증
+
+    Note over GHA,Dev: [자율 거버넌스 및 배포 게이트]
+    GHA->>Dev: 신규 브랜치 푸시 및 Pull Request 자동 오픈
+    GHA->>GHA: Security Gate 검사 (취약점 남아있으므로 Exit 1 차단)
+    Dev->>Dev: PR 검토 후 Merge 클릭
+    Dev->>GHA: 메인 브랜치 재실행 및 배포 통과
+```
+
+---
+
+## 📋 4. 디렉토리 구조 및 각 구성요소 역할
+
+```text
+codemender-security-lab/
+├── README.md                      # [현재 파일] 전체 아키텍처 및 상세 실습 매뉴얼
+├── package.json                   # 취약점 테스트용 Node.js 웹 애플리케이션 명세
+├── src/                           # 🚨 취약점 분석 대상 소스코드 (Express 백엔드)
+│   ├── README.md                  # 5대 취약점 상세 기술 분석 및 로컬 수정 가이드
+│   ├── app.js / server.js         # 웹 애플리케이션 진입점
+│   ├── api/controllers/           # [RCE 취약점] admin.controller.js (eval 사용)
+│   └── services/                  # [SSRF 취약점] catalog.service.js 등 취약 서비스들
+├── lab/                           # 🛠️ 실습 도구, 스크립트 및 솔루션
+│   ├── README.md                  # CLI 도구 사용법 및 힌트 모음
+│   ├── bin/cm-linux               # CodeMender 오프라인 CLI 실행 파일
+│   ├── hooks/                     # Git Pre-commit 훅 설치 스크립트 (install.sh)
+│   ├── scripts/                   # Semgrep 출력 결과를 cm 포맷으로 변환하는 브릿지
+│   ├── templates/                 # 실습자가 완성해야 하는 파이프라인 미완성 템플릿
+│   └── solutions/                 # 정답 파이프라인 (codemender-pipeline.solution.yaml)
+└── .github/                       # 🤖 GitHub CI/CD 파이프라인 설정
+    ├── README.md                  # Workflow 환경변수 및 권한 세팅 가이드
+    ├── scripts/                   # PR 발행, 패치 추출 등 파이프라인 보조 스크립트
+    └── workflows/                 # 실습자가 템플릿을 완성하여 배치할 위치
+```
+
+---
+
+## 🚀 5. 단계별 핸즈온 가이드 (Step-by-Step Execution)
+
+### [STEP 1] Google Cloud 환경 설정 및 API 활성화
+Google Cloud Console(또는 Cloud Shell)에서 실습에 필요한 프로젝트를 지정하고 핵심 API들을 활성화합니다.
 
 ```bash
-# 1. 프로젝트 ID 설정 (본인의 GCP 프로젝트 ID로 변경)
+# 1. 사용할 GCP 프로젝트 ID 설정 (자신의 프로젝트 ID로 변경)
 export PROJECT_ID="YOUR_GCP_PROJECT_ID"
 gcloud config set project $PROJECT_ID
 export PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 
-# 2. 필수 Google Cloud API 활성화
+# 2. 필수 API 활성화 (IAM, WIF 토큰 서비스, Vertex AI 등)
 gcloud services enable \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
@@ -63,8 +167,8 @@ gcloud services enable \
 
 ---
 
-### [2단계] Workload Identity Federation (WIF) 설정 (Keyless 인증)
-GitHub Actions 러너가 비밀 키 없이 인증할 수 있도록 WIF 풀과 프로바이더를 생성합니다.
+### [STEP 2] Workload Identity Federation (WIF) 설정 (Keyless 인증 구축)
+GitHub Actions 러너가 Google Cloud의 서비스 계정을 안전하게 대행할 수 있도록 WIF Pool과 OIDC Provider를 생성합니다.
 
 ```bash
 # 1. Workload Identity Pool 생성
@@ -73,8 +177,8 @@ gcloud iam workload-identity-pools create "github-actions" \
   --location="global" \
   --display-name="GitHub Actions Pool"
 
-# 2. Workload Identity Provider 생성 (OIDC 연동)
-# 본인의 GitHub 사용자명(Owner)을 지정합니다. (예: ldu1225)
+# 2. OIDC Provider 생성
+# ⚠️ 본인의 GitHub 계정명(Owner)을 지정하세요 (예: ldu1225)
 export GITHUB_OWNER="YOUR_GITHUB_USERNAME"
 
 gcloud iam workload-identity-pools providers create-oidc "github-oidc" \
@@ -89,8 +193,8 @@ gcloud iam workload-identity-pools providers create-oidc "github-oidc" \
 
 ---
 
-### [3단계] 서비스 계정(Service Account) 및 IAM 권한 부여
-CodeMender가 Gemini 모델(`Vertex AI`)을 호출할 수 있는 권한을 서비스 계정에 부여하고, WIF와 연결합니다.
+### [STEP 3] 전용 서비스 계정 생성 및 IAM 권한 부여
+CodeMender가 Gemini 3.7 Flash 모델에 접속하여 추론 및 패치를 수행할 수 있는 권한을 부여하고, WIF와 바인딩합니다.
 
 ```bash
 # 1. 서비스 계정 생성
@@ -100,7 +204,7 @@ gcloud iam service-accounts create "codemender-ci" \
 
 export SA_EMAIL="codemender-ci@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# 2. Vertex AI 호출 권한 및 서비스 사용 권한 부여
+# 2. Vertex AI 모델 호출 및 API 사용 권한 부여
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/serviceusage.serviceUsageConsumer"
@@ -109,8 +213,9 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/aiplatform.admin"
 
-# 3. WIF Provider와 서비스 계정 바인딩 (이 저장소에서만 권한 대행 허용)
-export REPO_NAME="codemender-security-lab" # 본인 저장소 이름
+# 3. WIF Provider가 이 서비스 계정을 대행(Impersonate)할 수 있도록 바인딩
+export REPO_NAME="codemender-security-lab"
+
 gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
   --project="${PROJECT_ID}" \
   --role="roles/iam.workloadIdentityUser" \
@@ -119,57 +224,73 @@ gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
 
 ---
 
-### [4단계] GitHub 저장소 생성 및 환경 변수 등록
-1. GitHub 웹에서 `codemender-security-lab` 저장소를 생성하고 이 코드를 푸시합니다.
-2. **저장소 권한 설정**:
-   - `Settings` > `Actions` > `General` > **Workflow permissions**
-   - **Read and write permissions** 체크
-   - **Allow GitHub Actions to create and approve pull requests** 체크 후 저장
-3. **Repository Variables 등록**:
-   - `Settings` > `Secrets and variables` > `Actions` > `Variables` 탭에서 추가:
-     - `GCP_WIF_PROVIDER`: `projects/<PROJECT_NUM>/locations/global/workloadIdentityPools/github-actions/providers/github-oidc`
-     - `GCP_SA_EMAIL`: `codemender-ci@<PROJECT_ID>.iam.gserviceaccount.com`
-     - `GCP_QUOTA_PROJECT`: `<PROJECT_ID>`
+### [STEP 4] GitHub 저장소 권한 및 Variables 설정
+
+#### 1) Workflow 쓰기 권한 활성화
+GitHub 웹에서 저장소의 **Settings > Actions > General > Workflow permissions**로 이동합니다:
+- [x] **Read and write permissions** 선택
+- [x] **Allow GitHub Actions to create and approve pull requests** 체크박스 활성화 후 저장
+
+#### 2) Repository Variables 등록
+**Settings > Secrets and variables > Actions > Variables** 탭으로 이동하여 아래 3개의 변수를 등록합니다:
+- `GCP_WIF_PROVIDER`: 
+  `projects/<PROJECT_NUM>/locations/global/workloadIdentityPools/github-actions/providers/github-oidc`
+- `GCP_SA_EMAIL`: 
+  `codemender-ci@<PROJECT_ID>.iam.gserviceaccount.com`
+- `GCP_QUOTA_PROJECT`: 
+  `<PROJECT_ID>`
 
 ---
 
-### [5단계] 로컬 Shift-Left 보안 실습 (Inner Loop)
-로컬에서 Git Hook을 등록하고, 코드를 커밋할 때 Semgrep이 취약점을 사전에 차단하는 것을 체험합니다.
+### [STEP 5] 로컬 Shift-Left 보안 실습 (Inner Loop)
+개발자가 코드를 커밋하기 전, 로컬 훅(Semgrep)이 위험한 `eval()` 코드를 사전에 차단하는 과정을 실습합니다.
 
 ```bash
-# 1. Semgrep 설치 및 Git pre-commit 훅 활성화
+# 1. 로컬 의존성 및 Git 훅 설치
 pip install semgrep
 ./lab/hooks/install.sh
 
-# 2. 취약점 수정 실습 (src/api/controllers/admin.controller.js)
-# eval() 함수를 제거하고 정규식 기반 안전 계산 로직으로 수정한 뒤 커밋합니다.
+# 2. 취약점 수정 (src/api/controllers/admin.controller.js)
+# eval()을 정규식 검증 기반 safeCalculate 함수로 교체합니다 (상세 코드는 src/README.md 참조).
+
+# 3. 커밋 및 원격 푸시
 git add src/api/controllers/admin.controller.js
 git commit -m "fix(security): sanitize dynamic eval in admin.controller.js"
 git push origin main
 ```
-> 👉 자세한 수정 방법은 [`src/README.md`](./src/README.md)를 참고하세요.
 
 ---
 
-### [6단계] CI/CD 파이프라인 완성 및 실행 (Outer Loop)
-1. 파이프라인 템플릿 복사:
+### [STEP 6] CI/CD 파이프라인 완성 및 실행 (Outer Loop)
+
+1. 미완성 템플릿을 실제 Actions 실행 경로로 복사합니다:
    ```bash
    mkdir -p .github/workflows
    cp lab/templates/codemender-pipeline.template.yaml .github/workflows/codemender-pipeline.yml
    ```
-2. `.github/workflows/codemender-pipeline.yml` 파일 내부의 **FIXME 1, 2, 3**을 완성합니다.
-   *(막힐 때는 [`lab/solutions/codemender-pipeline.solution.yaml`](./lab/solutions/codemender-pipeline.solution.yaml)을 참고하세요)*
-3. 커밋 및 푸시하여 파이프라인을 트리거합니다:
+2. `.github/workflows/codemender-pipeline.yml`을 열어 3곳의 **FIXME**를 완성합니다:
+   - **FIXME 1**: `permissions:` 블록에 `id-token: write` 추가 (WIF 필수 권한)
+   - **FIXME 2**: 취약점 스캔 명령어 `cm find "$SCAN_PATH" -y --model "$CM_MODEL"` 입력
+   - **FIXME 3**: 자동 패치 명령어 `cm fix "$FID" -y --bypass-warning --model "$CM_MODEL"` 입력
+   *(막힐 경우 `lab/solutions/codemender-pipeline.solution.yaml` 참조)*
+3. 커밋 후 푸시하여 파이프라인을 가동합니다:
    ```bash
    git add .github/workflows/codemender-pipeline.yml
-   git commit -m "ci: add codemender security pipeline"
+   git commit -m "ci: activate codemender security guardrail pipeline"
    git push origin main
    ```
 
 ---
 
-### [7단계] 결과 확인 및 배포 게이트 체험
-1. GitHub 저장소의 **[Actions]** 탭으로 이동하여 파이프라인 실행 과정을 확인합니다.
-2. CodeMender가 남은 취약점(SSRF 등)을 감지하고, Gemini AI가 스스로 작성한 **[Pull Request]**가 새로 열렸는지 확인합니다!
-3. 파이프라인의 **Security Gate** 단계가 왜 실패(`exit 1`)로 끝났는지 이유를 확인합니다 (취약점 잔존 상태에서 자동 배포 차단).
-4. 생성된 Pull Request를 리뷰하고 **[Merge pull request]** 버튼을 누르면, 파이프라인이 다시 실행되며 검증하는 선순환 과정을 관찰합니다.
+### [STEP 7] 결과 검증 및 자율 보안 거버넌스 체험
+
+1. **Actions 실행 관찰**: GitHub 저장소의 **[Actions]** 탭에서 러너가 WIF 토큰을 교환하고, `cm` 에이전트가 소스코드를 분석하는 실시간 로그를 확인합니다.
+2. **자동 생성된 Pull Request 확인**:
+   - CodeMender 에이전트가 `catalog.service.js`의 SSRF 취약점을 발견하고, 스스로 생성한 패치 브랜치와 함께 **Pull Request**를 발행했음을 확인합니다.
+   - PR의 `Files changed` 탭에서 Gemini 모델이 작성한 사설망 차단 정교한 필터 코드를 리뷰합니다.
+3. **Security Gate 배포 차단 확인**:
+   - 파이프라인의 마지막 단계인 `Security Gate`가 **빨간색(Failure, Exit 1)**으로 종료된 것을 확인합니다.
+   - **이유**: "취약점 패치 PR이 생성되었지만, 사람이 아직 검토/머지하지 않았으므로 운영 배포를 막는 안전장치"입니다.
+4. **Pull Request Merge 및 재실행**:
+   - PR 화면에서 **[Merge pull request]** 버튼을 누릅니다.
+   - `main` 브랜치에 머지되는 순간 파이프라인이 다시 자동으로 트리거되어 패치가 적용되었음을 확인하는 선순환 수명주기를 체험합니다.

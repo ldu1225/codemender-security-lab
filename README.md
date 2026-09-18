@@ -19,6 +19,7 @@
    - [Step 6: CI/CD 파이프라인 지시서 완성 (Outer Loop)](#step-6-cicd-파이프라인-지시서-완성-outer-loop)
    - [Step 7: 파이프라인 실행, AI 자동 패치 PR 리뷰 및 배포 차단(Gate) 체험](#step-7-파이프라인-실행-ai-자동-패치-pr-리뷰-및-배포-차단gate-체험)
 8. [문제 해결 및 트러블슈팅 (FAQ)](#8-문제-해결-및-트러블슈팅-faq)
+9. [부록: 온프레미스/엔터프라이즈 환경을 위한 Jenkins(젠킨스) 연동 가이드](#9-부록-온프레미스엔터프라이즈-환경을-위한-jenkins젠킨스-연동-가이드)
 
 ---
 
@@ -441,3 +442,119 @@ AI가 자동 패치 PR을 올려두었더라도, 개발자가 검토하고 머�
 ### Q3. 파이프라인에서 `gh pr create` 단계가 권한 오류(`Resource not accessible by integration`)로 실패합니다.
 - **원인**: GitHub 저장소의 Actions Workflow 권한이 `Read-only`로 제한되어 있어 PR을 생성하지 못한 경우입니다.
 - **해결책**: Step 4의 **GitHub 저장소 권한 설정**을 다시 확인하고, **Read and write permissions** 및 **Allow GitHub Actions to create and approve pull requests** 체크박스를 반드시 활성화하세요.
+
+---
+
+## 9. 부록: 온프레미스/엔터프라이즈 환경을 위한 Jenkins(젠킨스) 연동 가이드
+
+많은 엔터프라이즈 기업에서는 퍼블릭 SaaS인 GitHub Actions 대신 사내 자체 구축형 CI/CD 도구인 **Jenkins(젠킨스)**를 사용합니다. 
+이 랩에서 배운 **WIF 인증 + CodeMender AI 자율 패치** 원리는 젠킨스 환경에서도 100% 동일하게 적용할 수 있습니다.
+
+### 🔄 GitHub Actions vs Jenkins 아키텍처 매핑
+
+| 구현 기능 | GitHub Actions (본 실습) | Jenkins (엔터프라이즈 전환 시) |
+| :--- | :--- | :--- |
+| **파이프라인 지시서** | `.github/workflows/codemender-pipeline.yml` (YAML) | **`Jenkinsfile`** (Groovy Pipeline as Code) |
+| **자동 실행 트리거** | `on: push` (내장 트리거) | **GitHub Webhook** (`githubPush()` 트리거) |
+| **실행 인프라** | GitHub 호스팅 클라우드 러너 (`ubuntu-latest`) | 사내 Jenkins 에이전트 노드 또는 K8s 파드 |
+| **Keyless GCP 인증** | `google-github-actions/auth@v2` (WIF OIDC) | **`Google Cloud Workload Identity Federation for Jenkins`** 플러그인 또는 OIDC 자격증명 파일 주입 |
+| **CLI 도구 구동** | `lab/bin/cm-linux` 직접 호출 | 젠킨스 도커 컨테이너 내부에서 `cm-linux` 실행 |
+| **자율 PR 발행** | GitHub REST API / `gh` CLI | `gh` CLI 또는 Jenkins GitHub Branch Source 플러그인 |
+
+---
+
+### 📝 엔터프라이즈용 Jenkinsfile 레시피 예시
+
+사내 젠킨스 환경에서 CodeMender 자율 보안 게이트를 운영할 때 사용하는 표준 **`Jenkinsfile`** 구현체입니다:
+
+```groovy
+pipeline {
+    agent {
+        // CodeMender 실행에 필요한 의존성이 갖춰진 도커 컨테이너에서 실행
+        docker {
+            image 'node:20-bullseye'
+            args '-u root:root'
+        }
+    }
+
+    environment {
+        PROJECT_ID    = credentials('gcp-project-id')
+        SA_EMAIL      = credentials('codemender-sa-email')
+        WIF_PROVIDER  = credentials('gcp-wif-provider')
+        CM_MODEL      = 'gemini-3.7-flash'
+        SCAN_PATH     = 'src/'
+    }
+
+    triggers {
+        // GitHub 레포지토리에서 Push 이벤트 수신 시 자동 실행
+        githubPush()
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('GCP WIF Authentication') {
+            steps {
+                echo '🔑 Jenkins OIDC Token을 구글 클라우드 WIF와 교환하여 인증'
+                sh '''
+                    # Google Cloud SDK 설치 및 WIF OIDC 인증 수행
+                    # 사내 젠킨스 서비스 계정 또는 단기 STS 토큰을 발급받아 ADC 구성
+                    export GOOGLE_APPLICATION_CREDENTIALS="/tmp/gcp-wif-creds.json"
+                '''
+            }
+        }
+
+        stage('CodeMender Scan') {
+            steps {
+                echo '🔍 CodeMender 정적 분석 및 취약점 탐색'
+                sh '''
+                    chmod +x lab/bin/cm-linux
+                    export PATH="$(pwd)/lab/bin:$PATH"
+                    cm find "${SCAN_PATH}" -y --model "${CM_MODEL}"
+                    cm report -f json > target/codemender-report.json
+                '''
+            }
+        }
+
+        stage('Exploit Verification & Remediation') {
+            steps {
+                echo '🤖 Gemini 3.7 기반 가상 공격 검증 및 자동 패치 합성'
+                sh '''
+                    export PATH="$(pwd)/lab/bin:$PATH"
+                    
+                    # 발견된 High/Critical 취약점 추출 후 루프 수행
+                    # cm verify $FID (모의 해킹 검증)
+                    # cm fix $FID (Gemini 패치 합성)
+                '''
+            }
+        }
+
+        stage('Security Gate') {
+            steps {
+                echo '🚪 엔터프라이즈 보안 게이트 검사'
+                script {
+                    // 해결되지 않은 HIGH/CRITICAL 취약점이 남아있으면 빌드 실패 처리
+                    // 취약점이 있는 코드가 쿠버네티스나 운영 서버로 배포되는 것을 차단
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // 결과 HTML 보안 보고서를 젠킨스 빌드 아티팩트로 보관
+            archiveArtifacts artifacts: 'target/*.html, target/*.json', allowEmptyArchive: true
+        }
+    }
+}
+```
+
+---
+
+### 💡 젠킨스 환경 구축 시 핵심 팁 2가지
+1. **GitHub Webhook 연동**: 사내 젠킨스 인스턴스 URL(`https://jenkins.mycompany.com/github-webhook/`)을 GitHub 저장소의 **Settings > Webhooks**에 등록해야 개발자의 커밋 푸시를 실시간으로 감지할 수 있습니다.
+2. **Keyless WIF 확장**: 젠킨스가 AWS EKS나 사내 쿠버네티스에 떠 있다면, 해당 쿠버네티스의 Service Account OIDC 발급자를 Google Cloud WIF Pool의 Provider(`create-oidc`)로 직접 등록하여 젠킨스에서도 비밀 키 없이 Google Cloud Vertex AI를 안전하게 호출할 수 있습니다.

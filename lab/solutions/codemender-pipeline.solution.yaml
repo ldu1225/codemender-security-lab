@@ -40,7 +40,7 @@ permissions:
 #              still reports everything it finds; this only caps the expensive
 #              agentic work that follows.
 env:
-  SCAN_PATH: src/services
+  SCAN_PATH: .
   CM_BUNDLED: lab/bin/cm-linux
   CM_MODEL: gemini-3.7-flash
   CM_LIMIT: "1"
@@ -59,13 +59,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The keyless exchange. This action sends the runner's OIDC token to
-      # Google Cloud, receives a short-lived access token in return, and writes
-      # it to the runner as Application Default Credentials. Every later step,
-      # including cm, picks those credentials up automatically.
-      #
-      # Note that all three values come from repository variables. Nothing
-      # environment-specific is hardcoded, and no key file exists anywhere.
+      # Authenticate to Google Cloud using Keyless Workload Identity Federation.
       - name: Authenticate to Google Cloud (WIF / ADC)
         uses: google-github-actions/auth@v2
         with:
@@ -85,23 +79,28 @@ jobs:
           echo "$RUNNER_TEMP/cmbin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/cmbin/cm" --version
 
-      # Install project dependencies before any agent runs. This is purely a
-      # speed optimisation, not a correctness requirement.
-      #
-      # Without it, cm verify cannot resolve `express` while building its
-      # exploit harness, and the agent responds by searching the entire
-      # filesystem for it: `find / -name express`. That hits the 30 second
-      # command timeout, twice, for a full minute of wasted wall clock.
-      #
-      # node_modules/ is in .gitignore, so it survives the `git clean -fd`
-      # workspace reset that runs before every agent command. Install once
-      # here and it stays available for find, verify and fix alike.
-      #
-      # `|| true` is deliberate. A registry outage should not take down the
-      # security pipeline: the run simply degrades to the slower behaviour it
-      # had before this step existed.
-      - name: Install Application Dependencies
-        run: npm install --no-audit --no-fund || true
+      # Auto-detect language and install project dependencies before agent runs.
+      # Supports Node.js, Python, Go, Java (Maven/Gradle).
+      - name: Auto-detect and Install Application Dependencies
+        run: |
+          if [ -f package.json ]; then
+            echo "📦 Detected Node.js project. Installing dependencies..."
+            npm install --no-audit --no-fund || true
+          elif [ -f requirements.txt ]; then
+            echo "📦 Detected Python project. Installing dependencies..."
+            pip install -r requirements.txt || true
+          elif [ -f pom.xml ]; then
+            echo "📦 Detected Java Maven project. Resolving dependencies..."
+            mvn dependency:resolve -q || true
+          elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
+            echo "📦 Detected Java Gradle project. Resolving dependencies..."
+            gradle dependencies -q || true
+          elif [ -f go.mod ]; then
+            echo "📦 Detected Go project. Downloading modules..."
+            go mod download || true
+          else
+            echo "ℹ️ No standard dependency manifest found; proceeding with source scan."
+          fi
 
       # Creates the .codemender/ workspace and local findings database, then
       # tells cm two things about this project: where it lives, and how to
